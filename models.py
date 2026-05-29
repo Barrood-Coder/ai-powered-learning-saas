@@ -1,109 +1,103 @@
-from datetime import datetime
+from datetime import datetime, timezone  # 🛡️ 升級：引入現代時區模組
 from werkzeug.security import generate_password_hash, check_password_hash
-import json  # 用於解析 weak_areas 等 JSON 欄位
+import json
 
-# Note: 'db' represents the SQLAlchemy instance 
-# Typically imported from an extensions file or main app inside production
-# For open-source demonstration, it assumes: from app import db
+# Note: 'db' represents the SQLAlchemy instance initialized in your app extensions
+# from app import db
 
 class Question(db.Model):
+    __tablename__ = 'questions'
     id = db.Column(db.Integer, primary_key=True)
-    content = db.Column(db.String(500), nullable=False)
-    question_type = db.Column(db.String(20), default='multiple_choice')
-    option_a = db.Column(db.String(100))
-    option_b = db.Column(db.String(100))
-    option_c = db.Column(db.String(100))
-    option_d = db.Column(db.String(100))
-    correct_answer = db.Column(db.String(200), nullable=False)
-    explanation = db.Column(db.Text)
-    grade = db.Column(db.String(10), default='P1')
-    image_filename = db.Column(db.String(500))
+    content = db.Column(db.String(1000), nullable=False) # 擴大容錯空間
+    question_type = db.Column(db.String(50), default='multiple_choice')
+    option_a = db.Column(db.String(500))
+    option_b = db.Column(db.String(500))
+    option_c = db.Column(db.String(500))
+    option_d = db.Column(db.String(500))
+    correct_answer = db.Column(db.String(500), nullable=False)
+    explanation = db.Column(db.Text(length=20000)) # 🛡️ 安全加固：限制最大 Text 長度防範 DoS
+    grade = db.Column(db.String(20), default='P1')
+    image_filename = db.Column(db.String(1024)) # 🛡️ 擴大欄位防止 Cloudinary/S3 URL 溢出崩潰
     has_image = db.Column(db.Boolean, default=False)
-    is_math_content = db.Column(db.Boolean, default=False)  # 新增字段
+    is_math_content = db.Column(db.Boolean, default=False)
 
 class Student(db.Model):
+    __tablename__ = 'students'
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(50), nullable=False)
-    grade = db.Column(db.String(10), nullable=False)  # 學生所屬年級
-    password_hash = db.Column(db.String(200), nullable=False)  # 改為密碼哈希
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    name = db.Column(db.String(100), nullable=False)
+    grade = db.Column(db.String(20), nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False) # 🛡️ 安全加固：擴大至 255 防止未來加密算法升級被截斷
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc)) # 🛡️ 升級：現代時區感知 UTC 標準
 
-    # 設定密碼屬性
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
     
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
 
-    # 新增唯一約束，確保同一姓名和年級的組合唯一
     __table_args__ = (db.UniqueConstraint('name', 'grade', name='unique_student'),)
 
 class StudentWork(db.Model):
+    __tablename__ = 'student_works'
     id = db.Column(db.Integer, primary_key=True)
-    student_id = db.Column(db.Integer, db.ForeignKey('student.id'), nullable=False)
-    question_id = db.Column(db.Integer, db.ForeignKey('question.id'))
-    image_filename = db.Column(db.String(200))
-    submitted_at = db.Column(db.DateTime, default=datetime.utcnow)
-    status = db.Column(db.String(20), default='pending')
+    # 🛡️ 最佳實踐：加入 ondelete='CASCADE'，學生刪除時連帶清理作業，防止髒數據
+    student_id = db.Column(db.Integer, db.ForeignKey('students.id', ondelete='CASCADE'), nullable=False)
+    question_id = db.Column(db.Integer, db.ForeignKey('questions.id', ondelete='SET NULL'))
+    image_filename = db.Column(db.String(1024))
+    submitted_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    status = db.Column(db.String(50), default='pending')
     
-    # AI 批改相關字段
-    ai_feedback = db.Column(db.Text)  # AI批改反饋
-    ai_score = db.Column(db.Float)    # AI評分 (0-100)
-    weak_areas = db.Column(db.Text)   # 弱項領域 (JSON格式)
-    corrected_at = db.Column(db.DateTime)  # 批改時間
-    correction_status = db.Column(db.String(20), default='pending')  # pending, processing, completed, failed
+    ai_feedback = db.Column(db.Text(length=50000)) # 限制最大深度
+    ai_score = db.Column(db.Float)
+    weak_areas = db.Column(db.Text(length=10000)) # 儲存 JSON，限制長度防惡意爆破
+    corrected_at = db.Column(db.DateTime)
+    correction_status = db.Column(db.String(50), default='pending')
     
     student = db.relationship('Student', backref='works')
     question = db.relationship('Question', backref='student_works')
 
 class StudentWeakness(db.Model):
-    """學生弱項記錄 - 匹配現有PostgreSQL表結構"""
-    __tablename__ = 'student_weakness'  # 確保表名匹配
+    """學生弱項記錄 - 匹配現有PostgreSQL表結構（經過安全優化）"""
+    __tablename__ = 'student_weakness'
     
     id = db.Column(db.Integer, primary_key=True)
-    student_id = db.Column(db.Integer, db.ForeignKey('student.id'), nullable=False)
-    weakness_category = db.Column(db.String(100), nullable=False)  # 原來的 weakness_type
-    strength_level = db.Column(db.Float, default=1.0)  # 熟練度級別 (0-1)
-    last_practiced = db.Column(db.DateTime)  # 最後練習時間
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)  # 創建時間
-    topic = db.Column(db.String(100))  # 主題
-    subtopic = db.Column(db.String(100))  # 子主題
-    practice_count = db.Column(db.Integer, default=0)  # 練習次數
-    correct_count = db.Column(db.Integer, default=0)  # 正確次數
+    student_id = db.Column(db.Integer, db.ForeignKey('students.id', ondelete='CASCADE'), nullable=False)
+    weakness_category = db.Column(db.String(255), nullable=False)
+    strength_level = db.Column(db.Float, default=1.0)
+    last_practiced = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    topic = db.Column(db.String(255))
+    subtopic = db.Column(db.String(255))
+    practice_count = db.Column(db.Integer, default=0)
+    correct_count = db.Column(db.Integer, default=0)
     
-    # 計算字段屬性
     @property
     def accuracy_rate(self):
-        """計算正確率"""
         if self.practice_count == 0:
             return 0.0
         return (self.correct_count / self.practice_count) * 100
     
     @property
     def needs_practice(self):
-        """判斷是否需要加強練習"""
         if self.practice_count < 5:
-            return True  # 練習次數太少
-        if self.accuracy_rate < 70:
-            return True  # 正確率低於70%
-        return False
+            return True
+        return self.accuracy_rate < 70.0
     
     student = db.relationship('Student', backref='weaknesses')
-# 在現有app.py的模型部分添加
+
 class Tutor(db.Model):
-    """導師模型（簡化版）"""
+    """導師模型（加固版）"""
     __tablename__ = 'tutors'
     
     id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(50), unique=True, nullable=False)
-    password_hash = db.Column(db.String(200), nullable=False)
-    real_name = db.Column(db.String(50), nullable=False)
-    email = db.Column(db.String(100))
-    phone = db.Column(db.String(20))
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    username = db.Column(db.String(100), unique=True, nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False) # 加大密碼長度
+    real_name = db.Column(db.String(100), nullable=False)
+    email = db.Column(db.String(255))
+    phone = db.Column(db.String(50))
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     is_active = db.Column(db.Boolean, default=True)
     
-    # 擴展字段（JSON格式）
     tutor_metadata = db.Column(db.JSON, default=dict)
     
     def set_password(self, password):
@@ -112,28 +106,29 @@ class Tutor(db.Model):
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
 
-
 class AISession(db.Model):
-    """AI 分析會話模型"""
+    """AI 分析會話模型（安全加固版）"""
+    __tablename__ = 'ai_sessions'
     id = db.Column(db.Integer, primary_key=True)
-    student_id = db.Column(db.Integer, db.ForeignKey('student.id'), nullable=False)
-    original_question = db.Column(db.Text)
-    image_url = db.Column(db.String(500))
-    ai_analysis = db.Column(db.Text)  # JSON 格式的AI分析結果
-    practice_questions = db.Column(db.Text)  # JSON 格式的練習題
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    student_id = db.Column(db.Integer, db.ForeignKey('students.id', ondelete='CASCADE'), nullable=False)
+    original_question = db.Column(db.Text(length=20000)) # 🛡️ 限制大小防 DoS
+    image_url = db.Column(db.String(1024))
+    ai_analysis = db.Column(db.Text(length=50000))
+    practice_questions = db.Column(db.Text(length=50000))
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     
     student = db.relationship('Student', backref='ai_sessions')
 
 class PracticeResult(db.Model):
     """練習題結果模型"""
+    __tablename__ = 'practice_results'
     id = db.Column(db.Integer, primary_key=True)
-    student_id = db.Column(db.Integer, db.ForeignKey('student.id'), nullable=False)
-    ai_session_id = db.Column(db.Integer, db.ForeignKey('ai_session.id'), nullable=False)
-    question_index = db.Column(db.Integer)  # 練習題索引
-    user_answer = db.Column(db.String(500))
+    student_id = db.Column(db.Integer, db.ForeignKey('students.id', ondelete='CASCADE'), nullable=False)
+    ai_session_id = db.Column(db.Integer, db.ForeignKey('ai_sessions.id', ondelete='CASCADE'), nullable=False)
+    question_index = db.Column(db.Integer)
+    user_answer = db.Column(db.String(1000))
     is_correct = db.Column(db.Boolean)
-    submitted_at = db.Column(db.DateTime, default=datetime.utcnow)
+    submitted_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     
     student = db.relationship('Student', backref='practice_results')
     ai_session = db.relationship('AISession', backref='practice_results')
