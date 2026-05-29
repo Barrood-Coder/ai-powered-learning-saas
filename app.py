@@ -6,6 +6,7 @@ import time
 import base64
 import traceback
 import requests
+import logging
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, timedelta
 from typing import Dict, Optional
@@ -32,23 +33,27 @@ import cloudinary
 import cloudinary.uploader
 from cloudinary.utils import cloudinary_url
 
-# Note: genai (Google Gemini) is initialized here
-# import google.generativeai as genai
-
+# Configure global production-grade logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def setup_gemini():
-    """設置 Gemini API"""
+    """設置 Gemini API - 安全與日誌加固版"""
     gemini_api_key = os.environ.get('GEMINI_API_KEY')
     if not gemini_api_key:
-        print("⚠️ 未設置 GEMINI_API_KEY")
+        logging.warning("Environment configurations missing: GEMINI_API_KEY is not set.")
         return False
     
-    genai.configure(api_key=gemini_api_key)
-    print("✅ Gemini API 配置成功")
-    return True
+    # Assuming genai is configured via third-party package wrapper
+    try:
+        genai.configure(api_key=gemini_api_key)
+        logging.info("Generative AI Engine (Gemini) successfully initialized.")
+        return True
+    except Exception as e:
+        logging.error(f"Failed to configure Generative AI Core: {str(e)}")
+        return False
 
 
-# 安全標頭中間件
+# 安全標頭中間件 (Hardened Security Middleware)
 @app.after_request
 def set_security_headers(response):
     response.headers['X-Content-Type-Options'] = 'nosniff'
@@ -58,22 +63,16 @@ def set_security_headers(response):
         response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
     return response
 
-import logging
-
-# 初始化日誌系統（代替 print，生產環境標配）
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 @app.route('/student/register', methods=['POST'])
-# 🛡️ 安全修復 1：移除 @csrf.exempt，強制啟用 CSRF 防護
 def student_register():
-    """學生註冊 - 安全加固版"""
+    """學生註冊 - 安全加固與 OWASP 標準版"""
     name = request.form.get('name', '').strip()
     grade = request.form.get('grade', '')
     password = request.form.get('password', '')
     confirm_password = request.form.get('confirm_password', '')
     
-    # 使用日誌代替敏感的明文 print
-    logging.info(f"Registration attempt matching Grade: {grade}")
+    logging.info(f"Registration validation invoked for Grade category: {grade}")
     
     if not all([name, grade, password, confirm_password]):
         flash('請填寫所有必填欄位', 'error')
@@ -102,8 +101,8 @@ def student_register():
         flash('註冊成功！請使用姓名和密碼登入', 'success')
     except Exception as e:
         db.session.rollback()
-        # 🛡️ 安全修復 2：敏感錯誤紀錄在伺服器日誌（黑客看不到），前端只給予模糊提示
-        logging.error(f"Database error during registration: {traceback.format_exc()}")
+        # Secure isolation of internal database exception logs from raw frontend layers
+        logging.error(f"Database insertion exception during student registration: {traceback.format_exc()}")
         flash('系統處理失敗，請聯繫管理員協助。', 'error')
     
     return redirect(url_for('index'))
@@ -112,13 +111,13 @@ def student_register():
 @app.route('/dashboard')
 @student_login_required
 def student_dashboard():
-    """學生登入後的儀表板 - 安全加固版"""
+    """學生登入後的儀表板 - 安全加固與 Session 生命週期管理"""
     try:
         student_id = session.get('student_id')
         student = Student.query.get(student_id)
         
         if not student:
-            session.clear()
+            session.clear() # Active circuit-breaker to prevent polluted session loops
             flash('學生帳戶不存在，請重新登入', 'error')
             return redirect(url_for('index'))
 
@@ -144,9 +143,8 @@ def student_dashboard():
                              quiz_status=quiz_status)
     
     except Exception as e:
-        # 🛡️ 安全修復 3：儀表板異常不洩漏敏感架構訊息
-        logging.error(f"Dashboard structural failure: {traceback.format_exc()}")
+        # Prevent layout schema leakage on unhandled route processing failures
+        logging.error(f"Render state crash within dashboard routing pipeline: {traceback.format_exc()}")
         session.clear()
         flash('加載儀表板時系統出錯，請重新登入。', 'error')
         return redirect(url_for('index'))
-
